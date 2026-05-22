@@ -1,7 +1,6 @@
 import os
 import cv2
 import numpy as np
-import mediapipe as mp
 import streamlit as st
 from PIL import Image
 import tempfile
@@ -81,8 +80,8 @@ def load_model():
 
 # ── Core functions ────────────────────────────────────────────────────────────
 def pred_tone(path, sess):
-    img = np.array(Image.open(path).resize((224, 224))).astype(np.float32)
-    img = np.expand_dims(img, axis=0)
+    img   = np.array(Image.open(path).convert("RGB").resize((224, 224))).astype(np.float32)
+    img   = np.expand_dims(img, axis=0)
     probs = sess.run(None, {INPUT_NAME: img})[0][0]
     return cls_names[int(np.argmax(probs))], probs
 
@@ -91,29 +90,33 @@ def tone_value(probs):
     return sum(float(probs[i]) * weights[cls_names[i]] for i in range(len(cls_names)))
 
 def extract_lab_and_mask(img_path):
-    img_bgr = cv2.imread(img_path)
-    if img_bgr is None:
+    try:
+        import mediapipe as mp
+        img_bgr = cv2.imread(img_path)
+        if img_bgr is None:
+            return None, None
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        h, w    = img_rgb.shape[:2]
+        with mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as fm:
+            res = fm.process(img_rgb)
+            if not res.multi_face_landmarks:
+                return None, None
+            lms = res.multi_face_landmarks[0].landmark
+            def roi_mask(ids):
+                pts = np.array([[int(lms[i].x * w), int(lms[i].y * h)] for i in ids], dtype=np.int32)
+                m   = np.zeros((h, w), dtype=np.uint8)
+                cv2.fillPoly(m, [pts], 255)
+                return m
+            mask     = roi_mask(L_CHK) | roi_mask(R_CHK) | roi_mask(FORH)
+            skin_rgb = img_rgb[mask == 255]
+            if len(skin_rgb) < 500:
+                return None, None
+            skin_lab = cv2.cvtColor(skin_rgb.reshape(-1,1,3).astype(np.uint8), cv2.COLOR_RGB2LAB).reshape(-1,3)
+            overlay  = img_rgb.copy()
+            overlay[mask == 255] = (overlay[mask == 255] * 0.5 + np.array([255,160,80], dtype=np.float32) * 0.5).astype(np.uint8)
+            return skin_lab.mean(axis=0), overlay
+    except Exception:
         return None, None
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    h, w    = img_rgb.shape[:2]
-    with mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as fm:
-        res = fm.process(img_rgb)
-        if not res.multi_face_landmarks:
-            return None, None
-        lms = res.multi_face_landmarks[0].landmark
-        def roi_mask(ids):
-            pts = np.array([[int(lms[i].x * w), int(lms[i].y * h)] for i in ids], dtype=np.int32)
-            m   = np.zeros((h, w), dtype=np.uint8)
-            cv2.fillPoly(m, [pts], 255)
-            return m
-        mask     = roi_mask(L_CHK) | roi_mask(R_CHK) | roi_mask(FORH)
-        skin_rgb = img_rgb[mask == 255]
-        if len(skin_rgb) < 500:
-            return None, None
-        skin_lab = cv2.cvtColor(skin_rgb.reshape(-1,1,3).astype(np.uint8), cv2.COLOR_RGB2LAB).reshape(-1,3)
-        overlay  = img_rgb.copy()
-        overlay[mask == 255] = (overlay[mask == 255] * 0.5 + np.array([255,160,80]) * 0.5).astype(np.uint8)
-        return skin_lab.mean(axis=0), overlay
 
 def get_undertone(lab_mean):
     _, A, B = lab_mean
