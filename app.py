@@ -6,6 +6,7 @@ import streamlit as st
 from PIL import Image
 import tempfile
 import traceback
+import onnxruntime as ort
 
 st.set_page_config(page_title="Skin Tone Analyzer", page_icon="🎨", layout="centered")
 
@@ -40,8 +41,9 @@ footer { display: none; }
 """, unsafe_allow_html=True)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MODEL_PATH = "skintone_model.keras"
-cls_names  = ['dark', 'fair', 'light']  # verify this matches trn_ds.class_names
+MODEL_PATH = "skintone_model.onnx"
+cls_names  = ['dark', 'fair', 'light']
+INPUT_NAME = "keras_tensor_352"
 
 COLOR_MAP = {
     "white": "#FFFFFF", "cream": "#FFFDD0", "yellow": "#FFD700",
@@ -63,7 +65,7 @@ FORH  = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397]
 
 POOLS = {
     "dark": ["white","cream","yellow","cyan","mint","sky blue","bright red","lavender","pastel pink","light gray"],
-    "light":  ["maroon","teal","olive","charcoal","mustard","denim blue","forest green","deep purple"],
+    "mid":  ["maroon","teal","olive","charcoal","mustard","denim blue","forest green","deep purple"],
     "fair": ["navy","black","emerald","burgundy","royal blue","charcoal","maroon","teal","deep green"],
 }
 UNDERTONE_BONUS = {
@@ -75,14 +77,13 @@ UNDERTONE_BONUS = {
 # ── Model loader ──────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    import keras
-    return keras.models.load_model(MODEL_PATH)
+    return ort.InferenceSession(MODEL_PATH)
 
 # ── Core functions ────────────────────────────────────────────────────────────
-def pred_tone(path, model):
-    from keras.utils import load_img, img_to_array
-    arr   = img_to_array(load_img(path, target_size=(224, 224)))
-    probs = model.predict(np.expand_dims(arr, 0), verbose=0)[0]
+def pred_tone(path, sess):
+    img = np.array(Image.open(path).resize((224, 224))).astype(np.float32)
+    img = np.expand_dims(img, axis=0)
+    probs = sess.run(None, {INPUT_NAME: img})[0][0]
     return cls_names[int(np.argmax(probs))], probs
 
 def tone_value(probs):
@@ -141,9 +142,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 try:
-    model = load_model()
+    sess = load_model()
 except Exception:
-    st.error("Failed to load model. Make sure skintone_model.keras is in the same folder as app.py")
+    st.error("Failed to load model:")
     st.code(traceback.format_exc())
     st.stop()
 
@@ -156,7 +157,7 @@ if uploaded:
 
     try:
         with st.spinner("Analyzing your skin tone..."):
-            tone, probs  = pred_tone(tmp_path, model)
+            tone, probs  = pred_tone(tmp_path, sess)
             tv           = tone_value(probs)
             lab, overlay = extract_lab_and_mask(tmp_path)
             undertone    = get_undertone(lab) if lab is not None else None
